@@ -8,7 +8,7 @@
 <style>
   :root{--navy:#132C52;--navy-deep:#0D2140;--sky:#2E7FD1;--ok:#3DD68C;--bad:#FF7A7A}
   *{box-sizing:border-box}
-  html,body{height:100%;margin:0}
+  html,body{min-height:100%;margin:0}
   body{font-family:'Kanit',system-ui,sans-serif;color:#fff;display:flex;align-items:center;justify-content:center;
     padding:16px;background:linear-gradient(160deg,var(--navy-deep) 0%,var(--navy) 55%,#1E4176 100%)}
   .card{width:100%;max-width:380px;text-align:center}
@@ -17,11 +17,17 @@
   .cam{width:min(78vw,300px);aspect-ratio:1;margin:0 auto 18px;border-radius:50%;overflow:hidden;
     border:4px solid rgba(255,255,255,.25);background:#000;transition:border-color .2s}
   .cam.ok{border-color:var(--ok)} .cam.bad{border-color:var(--bad)}
+  .hidden{display:none !important}
   video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
   #msg{min-height:52px;font-size:16px;font-weight:600;line-height:1.4}
   .btn{display:none;width:100%;margin-top:10px;padding:13px;border-radius:10px;border:none;font:600 15.5px 'Kanit',sans-serif;
-    background:var(--sky);color:#fff;text-decoration:none;cursor:pointer}
-  .btn.alt{background:rgba(255,255,255,.12)}
+    background:var(--sky);color:#fff;text-decoration:none;cursor:pointer;text-align:center}
+  .btn.alt{background:rgba(255,255,255,.14)}
+  .btn.ok{background:#1E9E5A}
+  .btn:disabled{opacity:.5}
+  .consent{display:none;text-align:left;font-size:13.5px;line-height:1.5;background:rgba(255,255,255,.1);border-radius:10px;padding:12px;margin-bottom:6px}
+  .consent label{display:flex;gap:10px;align-items:flex-start;cursor:pointer}
+  .consent input{margin-top:4px;width:18px;height:18px;flex:none}
   .hint{font-size:12.5px;opacity:.7;margin-top:14px}
 </style>
 </head>
@@ -30,7 +36,13 @@
   <h1 id="title">สแกนใบหน้าเข้าสู่ระบบ</h1>
   <p class="sub" id="sub">ระบบเช็คชื่อนักเรียนออนไลน์</p>
   <div class="cam" id="cam"><video id="video" playsinline muted></video></div>
+  <div class="consent" id="consent"><label><input type="checkbox" id="agree">
+    <span>เจ้าของใบหน้ายินยอมให้โรงเรียนเก็บข้อมูลใบหน้า (เก็บเฉพาะค่าตัวเลข ไม่เก็บรูปถ่าย) เพื่อใช้เข้าสู่ระบบ และขอลบได้ทุกเมื่อ</span></label></div>
   <div id="msg">กำลังเริ่มต้น...</div>
+  <button class="btn" id="btnCam">สแกนด้วยกล้อง (5 ท่า)</button>
+  <label class="btn alt" id="btnPhoto" style="display:none">เพิ่มจากรูปถ่าย (เลือกได้หลายรูป)
+    <input type="file" id="file" accept="image/*" multiple hidden></label>
+  <button class="btn ok" id="btnSave">บันทึก</button>
   <button class="btn" id="retry" onclick="location.reload()">ลองอีกครั้ง</button>
   <a class="btn alt" id="pw" href="#">เข้าสู่ระบบด้วยรหัสผ่าน</a>
   <p class="hint" id="hint"></p>
@@ -43,10 +55,11 @@ var GAS_URL = 'https://script.google.com/macros/s/AKfycbwh2SMlHAEtaFvV4hsr9h1Sb4
 /* ================================================================ */
 
 var MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.13/model/';
+var MAX_SAMPLES = 12;
 var Q = new URLSearchParams(location.search);
 var MODE = Q.get('mode') === 'enroll' ? 'enroll' : 'login';
 var $ = function(id){ return document.getElementById(id); };
-var video = $('video'), OPT;
+var video = $('video'), OPT, OPT_PHOTO, camOn = false;
 var sleep = function(ms){ return new Promise(function(r){ setTimeout(r, ms); }); };
 var rnd = function(d){ return Array.from(d, function(x){ return Math.round(x*1e4)/1e4; }); };
 
@@ -57,15 +70,28 @@ var cid = (function(){
 })();
 
 function say(t, cls){ $('msg').textContent = t; $('cam').className = 'cam ' + (cls||''); }
+function show(id, on){ $(id).style.display = on ? 'block' : 'none'; }
 function post(body){
   return fetch(GAS_URL, {method:'POST', body:JSON.stringify(body)}).then(function(r){ return r.json(); });
 }
-function finish(t, showRetry){
-  say(t, 'bad');
-  if(showRetry) $('retry').style.display = 'block';
+function finish(t, showRetry){ say(t, 'bad'); show('retry', !!showRetry); }
+
+/* เปิดกล้องหน้า (เรียกเมื่อจำเป็นเท่านั้น) */
+async function startCam(){
+  if(camOn) return true;
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    say('เบราว์เซอร์นี้เปิดกล้องไม่ได้ กรุณาเปิดด้วย Chrome หรือ Safari', 'bad'); return false;
+  }
+  try{
+    var stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user', width:{ideal:640}, height:{ideal:480}}, audio:false});
+    video.srcObject = stream; await video.play(); camOn = true; return true;
+  }catch(e){
+    if(/Line\//i.test(navigator.userAgent)) $('hint').textContent = 'เปิดจาก LINE: กดเมนู ⋮ แล้วเลือก "เปิดในเบราว์เซอร์"';
+    say('เปิดกล้องไม่ได้ กรุณาอนุญาตการใช้กล้อง', 'bad'); return false;
+  }
 }
 
-/* จับใบหน้า 1 เฟรม → descriptor 128 ค่า / 'far' ถ้าไกลเกิน / null ถ้าไม่พบ */
+/* จับใบหน้า 1 เฟรม → descriptor / 'far' ถ้าไกลเกิน / null ถ้าไม่พบ */
 async function grab(){
   var r = await faceapi.detectSingleFace(video, OPT).withFaceLandmarks(true).withFaceDescriptor();
   if(!r) return null;
@@ -90,7 +116,8 @@ async function capture(n){
 
 /* ===== โหมดล็อกอิน ===== */
 async function runLogin(){
-  $('pw').style.display = 'block';
+  show('pw', true);
+  if(!(await startCam())) return finish($('msg').textContent, true);
   for(var i = 0; i < 5; i++){
     say('กำลังสแกนใบหน้า...');
     var d = await capture(3);
@@ -112,42 +139,78 @@ async function runLogin(){
   finish('สแกนไม่สำเร็จ ลองอีกครั้ง หรือเข้าสู่ระบบด้วยรหัสผ่าน', true);
 }
 
-/* ===== โหมดลงทะเบียน (admin เปิดจากหน้าจัดการผู้ใช้) ===== */
-async function runEnroll(){
-  var code = Q.get('code'), name = Q.get('name') || '';
-  $('title').textContent = 'ลงทะเบียนใบหน้า';
-  $('sub').textContent = name;
-  if(!code) return finish('ลิงก์ไม่ถูกต้อง กรุณากดลงทะเบียนจากหน้าจัดการผู้ใช้อีกครั้ง');
-  var steps = ['มองตรงที่กล้อง', 'หันหน้าไปทางซ้ายเล็กน้อย', 'หันหน้าไปทางขวาเล็กน้อย',
-               'มองตรงและยิ้มเล็กน้อย', 'มองตรงอีกครั้ง'];
-  var samples = [], misses = 0;
-  while(samples.length < steps.length){
-    say(steps[samples.length] + ' (' + (samples.length + 1) + '/' + steps.length + ')');
+/* ===== โหมดลงทะเบียน: ถ่ายด้วยกล้อง และ/หรือ เพิ่มจากรูปถ่าย ===== */
+var samples = [], busy = false;
+function refreshEnroll(){
+  var ok = $('agree').checked;
+  show('btnCam', ok && !busy && samples.length < MAX_SAMPLES);
+  show('btnPhoto', ok && !busy && samples.length < MAX_SAMPLES);
+  show('btnSave', ok && !busy && samples.length > 0);
+  $('btnSave').textContent = 'บันทึก (' + samples.length + ' ตัวอย่าง)';
+  $('hint').textContent = samples.length && samples.length < 3 ? 'แนะนำอย่างน้อย 3 ตัวอย่าง คนละมุมหน้า เพื่อให้สแกนแม่นขึ้น' : '';
+}
+async function enrollByCamera(){
+  busy = true; refreshEnroll(); $('cam').classList.remove('hidden');
+  if(!(await startCam())){ busy = false; refreshEnroll(); return; }
+  var steps = ['มองตรงที่กล้อง', 'หันหน้าไปทางซ้ายเล็กน้อย', 'หันหน้าไปทางขวาเล็กน้อย', 'มองตรงและยิ้มเล็กน้อย', 'มองตรงอีกครั้ง'];
+  var n = Math.min(steps.length, MAX_SAMPLES - samples.length), done = 0, misses = 0;
+  while(done < n){
+    say(steps[done] + ' (' + (done + 1) + '/' + n + ')');
     await sleep(1300);
     var d = await capture(2);
-    if(!d){
-      if(++misses > 3) return finish('ไม่พบใบหน้า ตรวจสอบแสงและกล้อง แล้วลองใหม่', true);
-      say('ไม่พบใบหน้า ลองใหม่', 'bad'); await sleep(800); continue;
-    }
-    samples.push(d);
+    if(!d){ if(++misses > 3){ say('ไม่พบใบหน้า ตรวจสอบแสงแล้วลองใหม่', 'bad'); break; } say('ไม่พบใบหน้า ลองใหม่', 'bad'); await sleep(800); continue; }
+    samples.push(d); done++;
     say('บันทึกแล้ว', 'ok'); await sleep(500);
   }
-  say('กำลังบันทึกข้อมูล...');
+  if(done === n) say('ถ่ายครบแล้ว เพิ่มรูปถ่ายหรือกดบันทึกได้เลย', 'ok');
+  busy = false; refreshEnroll();
+}
+async function enrollByPhotos(files){
+  busy = true; refreshEnroll();
+  var added = 0, skipped = 0;
+  for(var i = 0; i < files.length && samples.length < MAX_SAMPLES; i++){
+    say('กำลังอ่านรูปที่ ' + (i + 1) + '/' + files.length + '...');
+    try{
+      var img = await faceapi.bufferToImage(files[i]);
+      var rs = await faceapi.detectAllFaces(img, OPT_PHOTO).withFaceLandmarks(true).withFaceDescriptors();
+      if(rs.length === 1){ samples.push(rnd(rs[0].descriptor)); added++; } else skipped++;
+    }catch(e){ skipped++; }
+    await sleep(30);
+  }
+  say('เพิ่มจากรูปถ่าย ' + added + ' รูป' + (skipped ? ' (ข้าม ' + skipped + ' รูปที่ไม่พบใบหน้าหรือมีหลายคน)' : ''), added ? 'ok' : 'bad');
+  $('file').value = ''; busy = false; refreshEnroll();
+}
+async function saveEnroll(){
+  busy = true; refreshEnroll(); say('กำลังบันทึกข้อมูล...');
   try{
-    var res = await post({action:'enrollFace', code:code, descriptors:samples});
-    if(res.ok){ say('ลงทะเบียนใบหน้าของ ' + (res.name || name) + ' เรียบร้อยแล้ว', 'ok'); $('hint').textContent = 'ปิดหน้านี้ได้เลย'; }
-    else finish(res.error || 'บันทึกไม่สำเร็จ', true);
-  }catch(e){ finish('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้', true); }
+    var res = await post({action:'enrollFace', code:Q.get('code'), descriptors:samples});
+    if(res.ok){
+      say('ลงทะเบียนใบหน้าของ ' + (res.name || Q.get('name') || '') + ' เรียบร้อยแล้ว', 'ok');
+      ['btnCam','btnPhoto','btnSave'].forEach(function(id){ show(id, false); });
+      $('consent').style.display = 'none'; $('hint').textContent = 'ปิดหน้านี้ได้เลย'; return;
+    }
+    say(res.error || 'บันทึกไม่สำเร็จ', 'bad');
+  }catch(e){ say('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้', 'bad'); }
+  busy = false; refreshEnroll();
+}
+function setupEnroll(){
+  $('title').textContent = 'ลงทะเบียนใบหน้า';
+  $('sub').textContent = Q.get('name') || '';
+  if(!Q.get('code')) return finish('ลิงก์ไม่ถูกต้อง กรุณากดลงทะเบียนจากหน้าจัดการผู้ใช้อีกครั้ง');
+  $('cam').classList.add('hidden');
+  $('consent').style.display = 'block';
+  say('ติ๊กยินยอม แล้วเลือกวิธีลงทะเบียน');
+  $('agree').onchange = refreshEnroll;
+  $('btnCam').onclick = enrollByCamera;
+  $('btnSave').onclick = saveEnroll;
+  $('file').onchange = function(){ if(this.files.length) enrollByPhotos(Array.from(this.files)); };
+  refreshEnroll();
 }
 
 /* ===== เริ่มต้น ===== */
 async function init(){
   $('pw').href = GAS_URL;
   if(GAS_URL.indexOf('XXXXXXXX') !== -1) return finish('ยังไม่ได้ตั้งค่า GAS_URL ในไฟล์ face.html');
-  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
-    $('pw').style.display = 'block';
-    return finish('เบราว์เซอร์นี้เปิดกล้องไม่ได้ กรุณาเปิดด้วย Chrome หรือ Safari');
-  }
   say('กำลังโหลดระบบสแกนใบหน้า...');
   try{
     await faceapi.tf.ready();
@@ -157,16 +220,9 @@ async function init(){
       faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
     ]);
     OPT = new faceapi.TinyFaceDetectorOptions({inputSize:224, scoreThreshold:0.5});
-  }catch(e){ $('pw').style.display = 'block'; return finish('โหลดโมเดลไม่สำเร็จ ตรวจสอบอินเทอร์เน็ตแล้วลองใหม่', true); }
-  try{
-    var stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user', width:{ideal:640}, height:{ideal:480}}, audio:false});
-    video.srcObject = stream; await video.play();
-  }catch(e){
-    $('pw').style.display = 'block';
-    if(/Line\//i.test(navigator.userAgent)) $('hint').textContent = 'เปิดจาก LINE: กดเมนู ⋮ แล้วเลือก "เปิดในเบราว์เซอร์"';
-    return finish('เปิดกล้องไม่ได้ กรุณาอนุญาตการใช้กล้อง', true);
-  }
-  MODE === 'enroll' ? runEnroll() : runLogin();
+    OPT_PHOTO = new faceapi.TinyFaceDetectorOptions({inputSize:416, scoreThreshold:0.4});
+  }catch(e){ show('pw', MODE === 'login'); return finish('โหลดโมเดลไม่สำเร็จ ตรวจสอบอินเทอร์เน็ตแล้วลองใหม่', true); }
+  MODE === 'enroll' ? setupEnroll() : runLogin();
 }
 init();
 </script>
